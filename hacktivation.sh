@@ -1,178 +1,336 @@
 #!/bin/bash
+#
+# iOS Hacktivation Toolkit
+#
+# Originally by exploit-development (https://github.com/exploit-development/iOS-Hacktivation-Toolkit)
+# Updated by KŌGA (https://github.com/notluken) — iOS 15 support, macOS compatibility, palera1n integration
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#This program is free software: you can redistribute it and/or modify
-#it under the terms of the GNU General Public License as published by
-#the Free Software Foundation, either version 3 of the License, or
-#(at your option) any later version.
+set -u
 
-#This program is distributed in the hope that it will be useful,
-#but WITHOUT ANY WARRANTY; without even the implied warranty of
-#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#GNU General Public License for more details.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-#You should have received a copy of the GNU General Public License
-#along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Colors
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
+REQUIRED_TOOLS=(ideviceinfo idevicerestore irecovery palera1n sshpass iproxy)
 
-#COLOURS
-RED="\033[1;31m"
-GREEN="\033[1;32m"
-YELLOW="\033[1;33m"
-CYAN="\033[0;36m"
-NC="\e[0m"
+###############################################################################
+# Generic helpers
+###############################################################################
 
-
-###########################
-#ROOT PRIVILEGES
-###########################
-
-if [[ $EUID -ne 0 ]]; then
-      echo -e "$RED You don't have root privileges, execute the script as root.$NC"
-      exit 1
-fi
-
-clear
-
-
-###########################
-# Functions
-###########################
-
-# Continue or Exit
-function continueOrExit() {
-      echo ""
-      read -p "Complete! Back To Menu? [ Y / n ] : "  CHECK
-      if [[ "$CHECK" = "Y" || "$CHECK" = "y" || "$CHECK" = "Yes" || "$CHECK" = "yes" || "$CHECK" = "YES" ]]; then
-            bash hacktivation.sh
-      else
-            echo -e "$RED Program Exit ...$NC"
-            exit 1
-      fi
+# Case-insensitive yes check (replaces the old Y/y/Yes/yes/YES ladder).
+is_yes() {
+  case "$1" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-###########################
-#MENU
-###########################
+wait_for_enter() {
+  echo ""
+  read -rp "Press Enter to return to the menu... " _
+}
 
-echo -e "$GREEN"
+# Prints an install hint for a missing tool, based on the host OS.
+tool_hint() {
+  local tool="$1"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    case "$tool" in
+      ideviceinfo) echo "brew install libimobiledevice" ;;
+      idevicerestore) echo "brew tap stek29/homebrew-idevice && brew install idevicerestore (or: sudo port install idevicerestore)" ;;
+      irecovery) echo "brew install libirecovery" ;;
+      iproxy) echo "brew install libusbmuxd" ;;
+      sshpass) echo "brew install hudochenkov/sshpass/sshpass" ;;
+      palera1n) echo "curl -fsSL https://static.palera.in/scripts/install.sh | sh (see https://docs.palera.in)" ;;
+      *) echo "see https://docs.palera.in or your package manager" ;;
+    esac
+  else
+    case "$tool" in
+      ideviceinfo) echo "sudo apt install libimobiledevice-utils" ;;
+      idevicerestore) echo "sudo apt install idevicerestore" ;;
+      irecovery) echo "sudo apt install irecovery" ;;
+      iproxy) echo "sudo apt install usbmuxd" ;;
+      sshpass) echo "sudo apt install sshpass" ;;
+      palera1n) echo "curl -fsSL https://static.palera.in/scripts/install.sh | sh (see https://docs.palera.in)" ;;
+      *) echo "check your distribution's package manager" ;;
+    esac
+  fi
+}
 
-echo " **********************************************************************"
-echo " ********************** iOS Hacktivation Toolkit **********************"
-echo -e " **********************************************************************$NC"
-echo -e " [+]$GREEN    This software is maintained by Codesecure codesecure.org$NC    [+]"
+# Verbose check used by menu option 1: prints a status line per tool.
+check_dependencies() {
+  echo ""
+  echo -e "${YELLOW}Checking required tools...${NC}"
+  echo ""
 
-ActivationState=$(ideviceinfo | grep ActivationState: | awk '{print $NF}')
-DeviceName=$(ideviceinfo | grep DeviceName | awk '{print $NF}')
-UniqueDeviceID=$(ideviceinfo | grep UniqueDeviceID | awk '{print $NF}')
-SerialNumber=$(ideviceinfo | grep -w SerialNumber | awk '{print $NF}')
-ProductType=$(ideviceinfo | grep ProductType | awk '{print $NF}')
-ProductVersion=$(ideviceinfo | grep ProductVersion | awk '{print $NF}')
+  local tool missing=()
+  for tool in "${REQUIRED_TOOLS[@]}"; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}[ ok ]${NC} $tool"
+    else
+      echo -e "  ${RED}[miss]${NC} $tool"
+      missing+=("$tool")
+    fi
+  done
+  echo ""
 
-if test -z "$ActivationState" 
-then
-      echo ' ----------------------------------------------------------------------'
-      echo -e "$RED			CANNOT CONNECT TO DEVICE$NC           "
-      echo ' ----------------------------------------------------------------------'
-else
-      echo ' ----------------------------------------------------------------------'
-      echo -e "$GREEN Serial Number : $SerialNumber $NC$GREEN Device : $ProductType $NC$GREEN Firmware : $ProductVersion $NC"
-      echo ' ----------------------------------------------------------------------'
-fi
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo -e "${GREEN}All required tools are installed.${NC}"
+    return 0
+  fi
 
-echo -e "$YELLOW Select an option from the menu : $NC"
-echo ' ----------------------------------------------------------------------'	
-echo -e "$CYAN 1 : Complete Installation$NC"
-echo -e "$CYAN 2 : Factory Reset (Restore iDevice)$NC"
-echo -e "$CYAN 3 : Jailbreak (checkra1n)$NC"
-echo -e "$CYAN 4 : Tethered Bypass iOS 13.0 > [PATCHED MOBILEACTIVATIOND]$NC"
-echo -e "$CYAN 5 : Tethered Bypass iOS 12.4.7 > [PATCHED MOBILEACTIVATIOND]$NC"
-echo -e "$CYAN 6 : SSH Shell$NC"
-echo -e "$CYAN 0 : Exit$NC"
-echo ' ----------------------------------------------------------------------'
-read -p " Choose >  " ch
+  echo -e "${YELLOW}Install the missing tools:${NC}"
+  for tool in "${missing[@]}"; do
+    echo -e "  ${YELLOW}${tool}${NC} -> $(tool_hint "$tool")"
+  done
+  return 1
+}
 
-###########################
-#INSTALL
-###########################
+# Silent gate used before running a feature: prints only if something is missing.
+require_tools() {
+  local tool missing=()
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
 
-if [ $ch = 1 ]; then
+  if [ ${#missing[@]} -eq 0 ]; then
+    return 0
+  fi
 
-echo "deb https://assets.checkra.in/debian /" | sudo tee -a /etc/apt/sources.list
-apt-key adv --fetch-keys https://assets.checkra.in/debian/archive.key
-apt update
-apt install -y python libtool-bin libcurl4-openssl-dev libplist-dev libzip-dev openssl libssl-dev  libcurl4-openssl-dev libimobiledevice-dev libusb-1.0-0-dev libreadline-dev build-essential git make autoconf automake libxml2-dev libtool pkg-config checkra1n sshpass checkinstall
-git clone 'https://github.com/libimobiledevice/libirecovery'
-git clone 'https://github.com/libimobiledevice/libideviceactivation.git'
-git clone 'https://github.com/libimobiledevice/idevicerestore'
-git clone 'https://github.com/libimobiledevice/usbmuxd'
-git clone 'https://github.com/libimobiledevice/libimobiledevice'
-git clone 'https://github.com/libimobiledevice/libusbmuxd'
-git clone 'https://github.com/libimobiledevice/libplist'
-git clone 'https://github.com/rcg4u/iphonessh.git'
-cd ./libplist && ./autogen.sh --without-cython && sudo make install && cd ..
-cd ./libusbmuxd && ./autogen.sh && sudo make install && cd ..
-cd ./libimobiledevice && ./autogen.sh --without-cython && sudo make install && cd ..
-cd ./usbmuxd && ./autogen.sh && sudo make install && cd ..
-cd ./libirecovery && ./autogen.sh && sudo make install && cd ..
-cd ./idevicerestore && ./autogen.sh && sudo make install && cd ..
-cd ./libideviceactivation/ && ./autogen.sh && sudo make && sudo make install && cd ..
-sudo ldconfig
-continueOrExit
+  echo ""
+  echo -e "${RED}Missing required tool(s): ${missing[*]}${NC}"
+  for tool in "${missing[@]}"; do
+    echo -e "  ${YELLOW}${tool}${NC} -> $(tool_hint "$tool")"
+  done
+  return 1
+}
 
-###########################
-#RESTORE
-###########################
+###############################################################################
+# Device info / banner
+###############################################################################
 
-elif [ $ch = 2 ]; then
+print_banner() {
+  echo -e "${GREEN}"
+  echo " **********************************************************************"
+  echo " ********************** iOS Hacktivation Toolkit **********************"
+  echo -e " **********************************************************************${NC}"
+}
 
-idevicerestore -e -l
-continueOrExit
+# Extracts the value of a "Key: Value" line from cached ideviceinfo output.
+device_field() {
+  printf '%s\n' "$1" | grep -m1 "^$2: " | cut -d' ' -f2-
+}
 
-###########################
-#CHECKRA1N
-###########################
+print_device_info() {
+  echo ""
 
-elif [ $ch = 3 ]; then
+  if ! command -v ideviceinfo >/dev/null 2>&1; then
+    echo -e "${YELLOW}ideviceinfo not found — run option 1 to check dependencies.${NC}"
+    return
+  fi
 
-checkra1n
-continueOrExit
+  local info_output
+  info_output="$(ideviceinfo 2>/dev/null)"
 
-###########################
-#IOS 13 > MOBILEACTIVATIOND
-###########################
+  if [ -z "$info_output" ]; then
+    echo ' ----------------------------------------------------------------------'
+    echo -e "${RED}                     CANNOT CONNECT TO DEVICE${NC}"
+    echo ' ----------------------------------------------------------------------'
+    return
+  fi
 
-elif [ $ch = 4 ]; then
+  local device_name product_type product_version serial activation_state activation_color
+  device_name="$(device_field "$info_output" "DeviceName")"
+  product_type="$(device_field "$info_output" "ProductType")"
+  product_version="$(device_field "$info_output" "ProductVersion")"
+  serial="$(device_field "$info_output" "SerialNumber")"
+  activation_state="$(device_field "$info_output" "ActivationState")"
 
-bypass_scripts/mobileactivationd_13_x/./run.sh
-continueOrExit
+  if [ "$activation_state" = "Activated" ]; then
+    activation_color="$GREEN"
+  else
+    activation_color="$RED"
+  fi
 
-###########################
-#IOS 12.4.7 > MOBILEACTIVATIOND
-###########################
+  echo ' ----------------------------------------------------------------------'
+  echo -e "${GREEN} Device: ${NC}${device_name}   ${GREEN}Model: ${NC}${product_type}   ${GREEN}iOS: ${NC}${product_version}"
+  echo -e "${GREEN} Serial: ${NC}${serial}   ${GREEN}Activation: ${NC}${activation_color}${activation_state}${NC}"
+  echo ' ----------------------------------------------------------------------'
+}
 
-elif [ $ch = 5 ]; then
+###############################################################################
+# Menu actions
+###############################################################################
 
-bypass_scripts/mobileactivationd_12_4_7/./run.sh
-continueOrExit
+restore_device() {
+  if ! require_tools idevicerestore; then
+    return
+  fi
 
-###########################
-#SSH SHELL
-###########################
-elif [ $ch = 6 ]; then
+  echo ""
+  echo -e "${YELLOW}This performs a full restore and ERASES all data on the device.${NC}"
+  read -rp "Continue? [y/N] " confirm
 
-echo ""
-rm ~/.ssh/known_hosts >/dev/null 2>&1
-pgrep -f 'tcprelay.py' | xargs kill >/dev/null 2>&1
-python iphonessh/python-client/tcprelay.py -t 44:2222 >/dev/null 2>&1 &
-sleep 2
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 mount -o rw,union,update /
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222
-pgrep -f 'tcprelay.py' | xargs kill >/dev/null 2>&1
-continueOrExit
+  if is_yes "$confirm"; then
+    idevicerestore -e -l
+  else
+    echo -e "${CYAN}Cancelled.${NC}"
+  fi
+}
 
-elif [ $ch == 0 ]; then
-      echo -e "$RED Program Exit ...$NC"
+jailbreak_device() {
+  if ! require_tools palera1n; then
+    return
+  fi
+  palera1n
+}
+
+activation_bypass_menu() {
+  while true; do
+    clear
+    print_banner
+    print_device_info
+    echo ""
+    echo -e "${YELLOW}Activation Bypass — choose the iOS version installed on the device:${NC}"
+    echo ' ----------------------------------------------------------------------'
+    echo -e "${CYAN} 1 : iOS 12.x${NC}"
+    echo -e "${CYAN} 2 : iOS 13.x${NC}"
+    echo -e "${CYAN} 3 : iOS 14.x - 15.x (ldid re-signing)${NC}"
+    echo -e "${CYAN} 0 : Back${NC}"
+    echo ' ----------------------------------------------------------------------'
+    if ! read -rp " Choose > " sub_choice; then
+      echo ""
+      echo -e "${RED}No input received. Exiting...${NC}"
       exit 1
-else
-      echo "Option not found. Exiting"
-fi
+    fi
+
+    case "$sub_choice" in
+      1) run_bypass "mobileactivationd_12_4_7"; return ;;
+      2) run_bypass "mobileactivationd_13_x"; return ;;
+      3) run_bypass "mobileactivationd_15_x"; return ;;
+      0) return ;;
+      *)
+        echo -e "${YELLOW}Option not found.${NC}"
+        wait_for_enter
+        ;;
+    esac
+  done
+}
+
+run_bypass() {
+  local dir="$1"
+  local script="$SCRIPT_DIR/bypass_scripts/$dir/run.sh"
+
+  if [ ! -f "$script" ]; then
+    echo -e "${RED}Bypass script not found: $script${NC}"
+    wait_for_enter
+    return
+  fi
+
+  if ! require_tools sshpass iproxy ideviceinfo; then
+    wait_for_enter
+    return
+  fi
+
+  bash "$script"
+  wait_for_enter
+}
+
+ssh_shell() {
+  if ! require_tools sshpass iproxy; then
+    wait_for_enter
+    return
+  fi
+
+  echo ""
+  echo -e "${CYAN}Opening an SSH shell over USB (local port 2222 -> device port 44)...${NC}"
+
+  rm -f ~/.ssh/known_hosts >/dev/null 2>&1
+  pkill -f 'iproxy 2222:44' >/dev/null 2>&1
+
+  iproxy 2222:44 >/dev/null 2>&1 &
+  local iproxy_pid=$!
+  sleep 2
+
+  sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 2222 root@localhost mount -o rw,union,update /
+  sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 2222 root@localhost
+
+  kill "$iproxy_pid" >/dev/null 2>&1
+  wait_for_enter
+}
+
+###############################################################################
+# Main menu
+###############################################################################
+
+main_menu() {
+  clear
+  print_banner
+  print_device_info
+
+  echo ""
+  echo -e "${YELLOW} Select an option:${NC}"
+  echo ' ----------------------------------------------------------------------'
+  echo -e "${CYAN} 1 : Check Dependencies${NC}"
+  echo -e "${CYAN} 2 : Restore Device (idevicerestore)${NC}"
+  echo -e "${CYAN} 3 : Jailbreak (palera1n)${NC}"
+  echo -e "${CYAN} 4 : Activation Bypass${NC}"
+  echo -e "${CYAN} 5 : SSH Shell${NC}"
+  echo -e "${CYAN} 0 : Exit${NC}"
+  echo ' ----------------------------------------------------------------------'
+  if ! read -rp " Choose > " choice; then
+    echo ""
+    echo -e "${RED}No input received. Exiting...${NC}"
+    exit 1
+  fi
+
+  case "$choice" in
+    1)
+      check_dependencies
+      wait_for_enter
+      ;;
+    2)
+      restore_device
+      wait_for_enter
+      ;;
+    3)
+      jailbreak_device
+      wait_for_enter
+      ;;
+    4)
+      activation_bypass_menu
+      ;;
+    5)
+      ssh_shell
+      ;;
+    0)
+      echo -e "${RED}Exiting...${NC}"
+      exit 0
+      ;;
+    *)
+      echo -e "${YELLOW}Option not found.${NC}"
+      wait_for_enter
+      ;;
+  esac
+}
+
+while true; do
+  main_menu
+done

@@ -1,10 +1,15 @@
 #!/bin/bash
 #
-# Activation Lock bypass for iOS 13.x.
+# Activation Lock bypass for iOS 14.x - 15.x.
 #
-# Replaces the stock /usr/libexec/mobileactivationd with a patched binary
-# over an SSH-over-USB tunnel. The device must already be jailbroken and
-# booted (checkra1n/palera1n), with its SSH server reachable on port 44.
+# Reuses the iOS 13.x patched mobileactivationd binary (see the "mobileactivationd"
+# symlink in this directory, which points at bypass_scripts/mobileactivationd_13_x/).
+# Unlike iOS 13, iOS 14+ enforces entitlement checks that reject a plain binary
+# swap, so this script also re-signs the patched binary with the original
+# binary's entitlements via ldid.
+#
+# The device must already be jailbroken and booted (palera1n), with its SSH
+# server reachable on port 44.
 
 set -u
 
@@ -17,6 +22,8 @@ SSH_PASS="alpine"
 LOCAL_PORT=2222
 DEVICE_PORT=44
 LAUNCH_PLIST="/System/Library/LaunchDaemons/com.apple.mobileactivationd.plist"
+REMOTE_BIN="/usr/libexec/mobileactivationd"
+REMOTE_ENTITLEMENTS="/tmp/ents.xml"
 
 ssh_cmd() {
   sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$LOCAL_PORT" root@localhost "$@"
@@ -54,15 +61,17 @@ main() {
   wait_for_device
 
   ssh_cmd mount -o rw,union,update /
-  scp_cmd "$SCRIPT_DIR/mobileactivationd" "root@localhost:/usr/libexec/mobileactivationd"
-  ssh_cmd chmod 755 /usr/libexec/mobileactivationd
+  ssh_cmd "ldid -e $REMOTE_BIN > $REMOTE_ENTITLEMENTS"
+  ssh_cmd cp "$REMOTE_BIN" "$REMOTE_BIN.bak"
+  scp_cmd "$SCRIPT_DIR/mobileactivationd" "root@localhost:$REMOTE_BIN"
+  ssh_cmd chmod 755 "$REMOTE_BIN"
+  ssh_cmd "ldid -S$REMOTE_ENTITLEMENTS $REMOTE_BIN"
   ssh_cmd launchctl unload "$LAUNCH_PLIST"
   ssh_cmd launchctl load "$LAUNCH_PLIST"
   ssh_cmd uicache -a
-  ssh_cmd killall backboardd
   ssh_cmd killall SpringBoard
 
-  echo -e "${GREEN}Activation bypass applied for iOS 13.x.${NC}"
+  echo -e "${GREEN}Activation bypass applied for iOS 14.x - 15.x.${NC}"
 }
 
 main

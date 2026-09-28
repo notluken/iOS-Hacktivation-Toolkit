@@ -1,42 +1,72 @@
 #!/bin/bash
+#
+# Activation Lock bypass for iOS 12.4.7.
+#
+# Replaces the stock /usr/libexec/mobileactivationd with a patched binary
+# over an SSH-over-USB tunnel. The device must already be jailbroken and
+# booted (checkra1n/palera1n), with its SSH server reachable on port 44.
 
-rm ~/.ssh/known_hosts >/dev/null 2>&1
-pgrep -f 'tcprelay.py' | xargs kill >/dev/null 2>&1
-python iphonessh/python-client/tcprelay.py -t 44:2222 &
-sleep 2
-while true ; do 
-  result=$(ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=1 root@localhost echo ok 2>&1 | grep Connection) # -n shows line number
-  echo "DEBUG: WAITING FOR CONNECTION, PLEASE DISCONNECT AND RE-CONNECT USB CABLE"
+set -u
+
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SSH_PASS="alpine"
+LOCAL_PORT=2222
+DEVICE_PORT=44
+LAUNCH_PLIST="/System/Library/LaunchDaemons/com.apple.mobileactivationd.plist"
+
+ssh_cmd() {
+  sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$LOCAL_PORT" root@localhost "$@"
+}
+
+scp_cmd() {
+  sshpass -p "$SSH_PASS" scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$LOCAL_PORT" "$@"
+}
+
+cleanup() {
+  pkill -f "iproxy $LOCAL_PORT:$DEVICE_PORT" >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+wait_for_device() {
+  echo -e "${CYAN}Waiting for the device over USB. If nothing happens, disconnect and reconnect the USB cable.${NC}"
+  while true; do
+    local result
+    result=$(ssh -p "$LOCAL_PORT" -o BatchMode=yes -o ConnectTimeout=1 root@localhost echo ok 2>&1 | grep Connection)
+    if [ -z "$result" ]; then
+      echo -e "${GREEN}Connected to device.${NC}"
+      return
+    fi
+    sleep 1
+  done
+}
+
+main() {
+  rm -f ~/.ssh/known_hosts >/dev/null 2>&1
+  cleanup
+
+  iproxy "$LOCAL_PORT:$DEVICE_PORT" >/dev/null 2>&1 &
   sleep 1
-  if [ -z "$result" ] ; then
-echo 'CONNECTED TO DEVICE!'
-echo 'CONTINUE TO THE CHOOSE A WIFI NETWORK SCREEN BUT DO NOT CONNECT TO A NETWORK'
-read -p 'PRESS ENTER TO CONTINUE'
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 mount -o rw,union,update /
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 launchctl unload /System/Library/LaunchDaemons/com.apple.mobileactivationd.plist
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 rm /usr/libexec/mobileactivationd
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 uicache --all
-sshpass -p 'alpine' scp -P 2222 bypass_scripts/mobileactivationd_12_4_7/mobileactivationd root@localhost:/usr/libexec/mobileactivationd
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 chmod 755 /usr/libexec/mobileactivationd
-sshpass -p 'alpine' ssh -o StrictHostKeyChecking=no root@localhost -p 2222 launchctl load /System/Library/LaunchDaemons/com.apple.mobileactivationd.plist
-pgrep -f 'tcprelay.py' | xargs kill >/dev/null 2>&1
-echo 'CHOOSE CONNECT TO ITUNES OPTION ON DEVICE TO COMPLETE BYPASS'
-    break
-  fi
-done
 
-read -p "RETURN TO MENU? [ Y / N ] : " check
+  wait_for_device
 
-if [ $check = "Y" ]; then
-bash hacktivation.sh
-elif [ $check = "y" ]; then
-bash hacktivation.sh
-elif [ $check = "Yes" ]; then
-bash hacktivation.sh
-elif [ $check = "yes" ]; then
-bash hacktivation.sh
-elif [ $check = "YES" ]; then
-bash hacktivation.sh
-else
-exit 1
-fi
+  echo -e "${YELLOW}Continue to the \"Choose a Wi-Fi Network\" screen but do not connect to a network.${NC}"
+  read -rp "Press Enter to continue... " _
+
+  ssh_cmd mount -o rw,union,update /
+  ssh_cmd launchctl unload "$LAUNCH_PLIST"
+  ssh_cmd rm -f /usr/libexec/mobileactivationd
+  ssh_cmd uicache --all
+  scp_cmd "$SCRIPT_DIR/mobileactivationd" "root@localhost:/usr/libexec/mobileactivationd"
+  ssh_cmd chmod 755 /usr/libexec/mobileactivationd
+  ssh_cmd launchctl load "$LAUNCH_PLIST"
+
+  echo -e "${GREEN}Activation bypass applied for iOS 12.4.7.${NC}"
+  echo -e "${CYAN}On the device, choose \"Connect to iTunes\" to complete the bypass.${NC}"
+}
+
+main
